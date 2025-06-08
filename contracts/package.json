@@ -15,6 +15,8 @@
     "hardhat": "^2.24.2"
   },
   "dependencies": {
-    "@story-protocol/protocol-core": "github:storyprotocol/protocol-core-v1"
+    "@openzeppelin/contracts": "^5.2.0",
+    "@story-protocol/protocol-core": "github:storyprotocol/protocol-core-v1",
+    "dotenv": "^16.5.0"
   }
 }

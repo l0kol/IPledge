@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import "../lib/protocol-core-v1/contracts/registries/IPAssetRegistry.sol";
-import "../lib/protocol-core-v1/contracts/interfaces/modules/licensing/ILicensingModule.sol";
-import "../lib/protocol-core-v1/contracts/interfaces/modules/licensing/IPILicenseTemplate.sol";
-import "../lib/protocol-core-v1/contracts/lib/PILFlavors.sol";
+import { IPAssetRegistry } from "../lib/protocol-core-v1/contracts/registries/IPAssetRegistry.sol";
+import { ILicensingModule } from "../lib/protocol-core-v1/contracts/interfaces/modules/licensing/ILicensingModule.sol";
+import { IPILicenseTemplate } from "../lib/protocol-core-v1/contracts/interfaces/modules/licensing/IPILicenseTemplate.sol";
+import { PILFlavors } from "../lib/protocol-core-v1/contracts/lib/PILFlavors.sol";
+import { ReentrancyGuardUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 
 interface ISPGLicenseAttachmentWorkflows {
     struct IPMetadata {
@@ -31,8 +32,8 @@ interface ISPGLicenseAttachmentWorkflows {
     ) external returns (address ipId, uint256 tokenId, uint256[] memory licenseTermsIds);
 }
 
-contract ContentInvestment {
-    IIPAssetRegistry public immutable IP_ASSET_REGISTRY;
+contract ContentInvestment is ReentrancyGuardUpgradeable {
+    IPAssetRegistry public immutable IP_ASSET_REGISTRY;
     ILicensingModule public immutable LICENSING_MODULE;
     IPILicenseTemplate public immutable PIL_TEMPLATE;
     address public immutable ROYALTY_POLICY_LAP;
@@ -49,7 +50,7 @@ contract ContentInvestment {
         address _spgNftCollection,
         address spgAddress
     ) {
-        IP_ASSET_REGISTRY = IIPAssetRegistry(ipAssetRegistry);
+        IP_ASSET_REGISTRY = IPAssetRegistry(ipAssetRegistry);
         LICENSING_MODULE = ILicensingModule(licensingModule);
         PIL_TEMPLATE = IPILicenseTemplate(pilTemplate);
         ROYALTY_POLICY_LAP = royaltyPolicyLAP;
@@ -64,29 +65,48 @@ contract ContentInvestment {
         State state;
         string description;
         address owner;
-        uint256 fundsReceived;
-        uint256 fundingGoal;
-        address ipAssetAddress;  // NFT contract address representing the IP Asset
-        uint256 ipAssetTokenId;  // Token ID of the IP Asset NFT
+        uint128 fundsReceived;
+        uint128 fundingGoal;
+        address ipAssetAddress;
+        uint256 ipAssetTokenId;
     }
 
     uint256 public ideaCount;
     mapping(uint256 => Idea) public ideas;
+    mapping(uint256 => mapping(address => uint256)) public contributions;
 
-    event IdeaCreated(uint256 indexed ideaId, address indexed owner, string description, uint256 fundingGoal);
-    event Funded(uint256 indexed ideaId, address indexed investor, uint256 amount);
-    event FundsCollected(uint256 indexed ideaId, address indexed owner, uint256 amount);
+    event IdeaCreated(
+        uint256 indexed ideaId,
+        address indexed owner,
+        string description,
+        uint256 fundingGoal,
+        address ipId,
+        uint256 tokenId
+    );
 
-    /// @notice Create a new idea by minting an NFT, registering it as IP, and attaching license terms in one call
+    event Funded(
+        uint256 indexed ideaId,
+        address indexed investor,
+        uint256 amount
+    );
+
+    event FundsCollected(
+        uint256 indexed ideaId,
+        address indexed owner,
+        uint256 amount
+    );
+
     function createIdea(
         string memory description,
         uint256 fundingGoal,
         ISPGLicenseAttachmentWorkflows.IPMetadata calldata ipMetadata,
         ISPGLicenseAttachmentWorkflows.LicenseTermsData[] calldata licenseTermsData
     ) external {
+        require(bytes(description).length > 0, "Description required");
+        require(fundingGoal > 0 && fundingGoal <= type(uint128).max, "Invalid funding goal");
+
         ideaCount++;
 
-        // Mint NFT, register IP Asset, attach license terms atomically via SPG
         (address ipId, uint256 tokenId, ) = spg.mintAndRegisterIpAndAttachPILTerms(
             spgNftCollection,
             msg.sender,
@@ -100,37 +120,43 @@ contract ContentInvestment {
             description: description,
             owner: msg.sender,
             fundsReceived: 0,
-            fundingGoal: fundingGoal,
+            fundingGoal: uint128(fundingGoal),
             ipAssetAddress: spgNftCollection,
             ipAssetTokenId: tokenId
         });
 
-        emit IdeaCreated(ideaCount, msg.sender, description, fundingGoal);
+        emit IdeaCreated(ideaCount, msg.sender, description, fundingGoal, ipId, tokenId);
     }
 
-    // Fund an idea
-    // TODO: Mint licence token to investors once the idea is fully funded 
     function fundIdea(uint256 ideaId) external payable {
         Idea storage idea = ideas[ideaId];
-        require(idea.state == State.Created, "Idea not open for funding");
-        require(msg.value > 0, "Must send funds");
-        idea.fundsReceived += msg.value;
+        require(idea.state == State.Created, "Not open for funding");
+        require(msg.value > 0, "Zero value");
+
+        idea.fundsReceived += uint128(msg.value);
+        contributions[ideaId][msg.sender] += msg.value;
 
         if (idea.fundsReceived >= idea.fundingGoal) {
             idea.state = State.Funded;
         }
+
         emit Funded(ideaId, msg.sender, msg.value);
     }
 
-    // Owner collects funds once funded
-    function collectFunds(uint256 ideaId) external {
+    function collectFunds(uint256 ideaId) external nonReentrant {
         Idea storage idea = ideas[ideaId];
-        require(msg.sender == idea.owner, "Only owner can collect");
-        require(idea.state == State.Funded, "Idea not fully funded");
+        require(msg.sender == idea.owner, "Not owner");
+        require(idea.state == State.Funded, "Not funded");
+
         uint256 amount = idea.fundsReceived;
         idea.fundsReceived = 0;
         idea.state = State.Completed;
+
         payable(idea.owner).transfer(amount);
         emit FundsCollected(ideaId, idea.owner, amount);
+    }
+
+    function getIdea(uint256 ideaId) external view returns (Idea memory) {
+        return ideas[ideaId];
     }
 }

@@ -1,4 +1,5 @@
 require("@nomicfoundation/hardhat-toolbox");
+require("dotenv/config");
 
 module.exports = {
   solidity: {
@@ -40,5 +41,13 @@ module.exports = {
     cache: "./cache",
     artifacts: "./artifacts",
     libraries: "./lib", // Tell Hardhat to look in ./lib
+  },
+  networks: {
+    hardhat: {
+      forking: {
+        url: `https://lingering-winter-spree.story-mainnet.quiknode.pro/${process.env.QUICKNODE_API_KEY}`,
+      },
+    },
+    // Add other networks as needed
   },
 };
